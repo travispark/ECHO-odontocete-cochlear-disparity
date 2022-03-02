@@ -1,0 +1,285 @@
+---
+title: "ECHO_disparity-analyses"
+author: "Travis Park, Natalie Cooper, Thomas Guillerme"
+date: "16/02/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# ECHO: Disparity analyses
+
+This document takes the PC scores obtained fom the PCAs in the ECHO_GPA-ACE document and uses them to run a series of disparity analyses, including: disparity-through-time; between group disparity; and time-slicing. 
+
+Remember to alter file paths to match your own directories.
+
+## Load libraries
+
+```{r}
+library(here)
+library(devtools)
+library(ape)
+library(Claddis)
+library(dispRity)
+library(dplyr)
+library(broom)
+library(tibble)
+library(jtools)
+library(huxtable)
+```
+
+## Load tree
+
+```{r}
+ECHO_tree <- read.tree(here("Data/BAMM_testtree_4.tre"))
+# Adding node labels
+ECHO_tree <- makeNodeLabel(ECHO_tree, method = "number", prefix = "n")
+# Adding a root age (max tree age date) as write.nexus/tree won't save root times
+ECHO_tree$root.time <- max(tree.age(ECHO_tree)[, 1])
+```
+
+## Load PC scores files
+
+```{r}
+## PC scores with ACE
+ECHO_ace_pca_matrix <-  read.csv(here("Data/ECHO_ace_pca-scores_2.csv"))
+# Make the taxon names the row names and then remove the taxon column from the data
+row.names(ECHO_ace_pca_matrix) <- ECHO_ace_pca_matrix$X
+ECHO_ace_pca_matrix <- select(ECHO_ace_pca_matrix, -X)
+# format the csv file as a matrix
+ECHO_ace_pca_matrix <- as.matrix(ECHO_ace_pca_matrix)
+```
+
+## Set jtools values
+This sets the number of decimal points displayed when using the jtool function 'summ', which will be used below to combine our lm results into a table:
+
+```{r}
+set_summ_defaults(digits = 5)
+```
+
+## Disparity-through-time analyses
+
+This analysis will measure changes in disparity through time by separating the data (can be specimens and/or the calculated ancestral states) into time bins (which can be defined manually or set from geological time divisions), where disparity is then calculated for each time bin. We then test for differences between the time bins.
+
+# Load in geological time bin ages
+
+These come from the International Commission on Stratigraphy 2015 ages:
+
+```{r}
+strat_ages <- get.bin.ages(ECHO_tree, type = "Epoch", ICS = 2015)
+```
+
+We will now rarefy the original data to remove sampling biases.
+
+To run these analyses the standard 'dispRity.through.time' wrapper cannot be used as it doesn't let you include the node values. Instead you have to run the analysis step by step, as shown below.
+
+Sum of variances (the sum of the variances of each axis of the matrix):
+```{r}
+# Delineate your time bins and indicate that nodes are also to be included
+aceDTT_sumvar_rar <- chrono.subsets(ECHO_ace_pca_matrix, ECHO_tree, "discrete", time = strat_ages, inc.nodes = TRUE)
+# Rarefy the matrix
+aceDTT_sumvar_rar <- boot.matrix(aceDTT_sumvar_rar, rarefaction = "min")
+# calculate the disparity values for your time bins
+aceDTT_sumvar_rar <- dispRity(aceDTT_sumvar_rar, metric = c(sum, variances))
+# Summarise DTT results
+aceDTT_sum1 <- summary.dispRity(aceDTT_sumvar_rar)
+aceDTT_sum1 <- add_column(aceDTT_sum1, 
+             analysis = "DTT", 
+             metric = "sumvar", 
+             model = aceDTT_sumvar_rar$call$subsets[2],
+             .before = 1
+             )
+# export  as csv file
+write.csv(aceDTT_sum1, (here("Outputs/aceDTT_results.csv")))
+# Basic plot of DTT results
+plot.dispRity(aceDTT_sumvar_rar, type = "continuous", main = "aceDTT_sumvar_rar")
+# Test for differences between the time bins using a linear model
+aceDTT_sumvar_rar_lm <- test.dispRity(aceDTT_sumvar_rar, test = lm, comparisons = "all", correction = "bonferroni")
+# Summarise lm results
+aceDTT_lm_sum1 <- summ(aceDTT_sumvar_rar_lm)
+# export lm summary as spreadsheet 
+export_summs(aceDTT_lm_sum1, statistics = "all", to.file = "xlsx", file.name = (here("Outputs/aceDTT_lm_results.xlsx")))
+```
+
+## Time-slicing analysis
+
+The ‘time-slicing’ approach considers subsets of taxa in the morphospace at specific equidistant points in time, as opposed to considering subsets of taxa  between two points in time. This results in even-sampling of the morphospace across time and allows us to use different underlying models of character evolution (punctuated or gradual). In practice, time-slicing considers the disparity of any element present in the phylogeny (branches, nodes and tips) at any point in time. When the phylogenetic elements are nodes or tips, the ordination scores for the nodes or tips are directly used for calculating disparity. When the phylogenetic elements are branches we choose the ordination score for the branch using one of two evolutionary models, which can be implemented in 6 different ways. These 6 models are all implemented using the sum of variances disparity metric for both 1 Ma and 5 Ma time slices, resulting in 12 separate analyses. We also test the metric below too, to ensure it is a suitable metric (i.e. a good proxy of tait space size). Please also note that all these analyses are rarefied.
+
+### 1 Ma timeslice
+
+# Sum of variances
+
+Sum of variances metric, acctran model:
+```{r}
+# Creating the timeslices
+ts1_sumvar_acctran_rar <- chrono.subsets(ECHO_ace_pca_matrix, ECHO_tree, method = "continuous", model = "acctran", time = 36, inc.nodes = TRUE, t0 = 35)
+# Bootstrap the analysis
+ts1_sumvar_acctran_rar <- boot.matrix(ts1_sumvar_acctran_rar, rarefaction = "min")
+# Calculate disparity values
+ts1_sumvar_acctran_rar <- dispRity(ts1_sumvar_acctran_rar, metric = c(sum, variances))
+# Summarise TS results
+ts1_sum1 <- summary.dispRity(ts1_sumvar_acctran_rar)
+ts1_sum1 <- add_column(ts1_sum1, 
+             analysis = "ts1", 
+             metric = "sumvar", 
+             model = ts1_sumvar_acctran_rar$call$subsets[2],
+             .before = 1
+             )
+# Basic plot of TS results
+plot.dispRity(ts1_sumvar_acctran_rar, type = "continuous", main = "ts1_sumvar_acctran_rar")
+# Test for differences between the time slices using a linear model
+ts1_sumvar_acctran_rar_lm <- test.dispRity(ts1_sumvar_acctran_rar, test = lm, comparisons = "all", correction = "bonferroni")
+# Summarise lm results
+ts1_lm_sum1 <- summ(ts_sumvar_acctran_rar_lm)
+```
+
+Sum of variances metric, deltran model:
+```{r}
+# Creating the timeslices
+ts1_sumvar_deltran_rar <- chrono.subsets(ECHO_ace_pca_matrix, ECHO_tree, method = "continuous", model = "deltran", time = 36, inc.nodes = TRUE, t0 = 35)
+# Bootstrap the analysis
+ts1_sumvar_deltran_rar <- boot.matrix(ts1_sumvar_deltran_rar, rarefaction = "min")
+# Calculate disparity values
+ts1_sumvar_deltran_rar <- dispRity(ts1_sumvar_deltran_rar, metric = c(sum, variances))
+# Summarise TS results
+ts1_sum2 <- summary.dispRity(ts1_sumvar_deltran_rar)
+ts1_sum2 <- add_column(ts1_sum2, 
+             analysis = "ts1", 
+             metric = "sumvar", 
+             model = ts1_sumvar_deltran_rar$call$subsets[2],
+             .before = 1
+             )
+# Basic plot of TS results
+plot.dispRity(ts1_sumvar_deltran_rar, type = "continuous", main = "ts1_sumvar_deltran_rar")
+# Test for differences between the time slices using a linear model
+ts1_sumvar_deltran_rar_lm <- test.dispRity(ts1_sumvar_deltran_rar, test = lm, comparisons = "all", correction = "bonferroni")
+# Summarise lm results
+ts1_lm_sum2 <- summ(ts1_sumvar_deltran_rar_lm)
+```
+
+Sum of variances metric, random model:
+```{r}
+# Creating the timeslices
+ts1_sumvar_rand_rar <- chrono.subsets(ECHO_ace_pca_matrix, ECHO_tree, method = "continuous", model = "random", time = 36, inc.nodes = TRUE, t0 = 35)
+# Bootstrap the analysis
+ts1_sumvar_rand_rar <- boot.matrix(ts1_sumvar_rand_rar, rarefaction = "min")
+# Calculate disparity values
+ts1_sumvar_rand_rar <- dispRity(ts1_sumvar_rand_rar, metric = c(sum, variances))
+# Summarise TS results
+ts1_sum3 <- summary.dispRity(ts1_sumvar_rand_rar)
+ts1_sum3 <- add_column(ts1_sum3, 
+             analysis = "ts1", 
+             metric = "sumvar", 
+             model = ts1_sumvar_rand_rar$call$subsets[2],
+             .before = 1
+             )
+# Basic plot of TS results
+plot.dispRity(ts1_sumvar_rand_rar, type = "continuous", main = "ts1_sumvar_rand_rar")
+# Test for differences between the time slices using a linear model
+ts1_sumvar_rand_rar_lm <- test.dispRity(ts1_sumvar_rand_rar, test = lm, comparisons = "all", correction = "bonferroni")
+# Summarise lm results
+ts1_lm_sum3 <- summ(ts1_sumvar_rand_rar_lm)
+```
+
+Sum of variances metric, proximity model:
+```{r}
+# Creating the timeslices
+ts1_sumvar_prox_rar <- chrono.subsets(ECHO_ace_pca_matrix, ECHO_tree, method = "continuous", model = "proximity", time = 36, inc.nodes = TRUE, t0 = 35)
+# Bootstrap the analysis
+ts1_sumvar_prox_rar <- boot.matrix(ts1_sumvar_prox_rar, rarefaction = "min")
+# Calculate disparity values
+ts1_sumvar_prox_rar <- dispRity(ts1_sumvar_prox_rar, metric = c(sum, variances))
+# Summarise TS results
+ts1_sum4 <- summary.dispRity(ts1_sumvar_prox_rar)
+ts1_sum4 <- add_column(ts1_sum4, 
+             analysis = "ts1", 
+             metric = "sumvar", 
+             model = ts1_sumvar_prox_rar$call$subsets[2],
+             .before = 1
+             )
+# Basic plot of TS results
+plot.dispRity(ts1_sumvar_prox_rar, type = "continuous", main = "ts1_sumvar_prox_rar")
+# Test for differences between the time slices using a linear model
+ts1_sumvar_prox_rar_lm <- test.dispRity(ts1_sumvar_prox_rar, test = lm, comparisons = "all", correction = "bonferroni")
+# Summarise lm results
+ts1_lm_sum4 <- summ(ts1_sumvar_prox_rar_lm)
+```
+
+Sum of variances metric, equal split model:
+```{r}
+# Creating the timeslices
+ts1_sumvar_eqsplit_rar <- chrono.subsets(ECHO_ace_pca_matrix, ECHO_tree, method = "continuous", model = "equal.split", time = 36, inc.nodes = TRUE, t0 = 35)
+# Bootstrap the analysis
+ts1_sumvar_eqsplit_rar <- boot.matrix(ts1_sumvar_eqsplit_rar, rarefaction = "min")
+# Calculate disparity values
+ts1_sumvar_eqsplit_rar <- dispRity(ts1_sumvar_eqsplit_rar, metric = c(sum, variances))
+# Summarise TS results
+ts1_sum5 <- summary.dispRity(ts1_sumvar_eqsplit_rar)
+ts1_sum5 <- add_column(ts1_sum5, 
+             analysis = "ts1", 
+             metric = "sumvar", 
+             model = ts1_sumvar_eqsplit_rar$call$subsets[2],
+             .before = 1
+             )
+# Basic plot of TS results
+plot.dispRity(ts1_sumvar_eqsplit_rar, type = "continuous", main = "ts1_sumvar_eqsplit_rar")
+# Test for differences between the time slices using a linear model
+ts1_sumvar_eqsplit_rar_lm <- test.dispRity(ts1_sumvar_eqsplit_rar, test = lm, comparisons = "all", correction = "bonferroni")
+# Summarise lm results
+ts1_lm_sum5 <- summ(ts1_sumvar_eqsplit_rar_lm)
+```
+
+Sum of variances metric, gradual split model:
+```{r}
+# Creating the timeslices
+ts1_sumvar_grdsplit_rar <- chrono.subsets(ECHO_ace_pca_matrix, ECHO_tree, method = "continuous", model = "gradual.split", time = 36, inc.nodes = TRUE, t0 = 35)
+# Bootstrap the analysis
+ts1_sumvar_grdsplit_rar <- boot.matrix(ts1_sumvar_grdsplit_rar, rarefaction = "min")
+# Calculate disparity values
+ts1_sumvar_grdsplit_rar <- dispRity(ts1_sumvar_grdsplit_rar, metric = c(sum, variances))
+# Summarise TS results
+ts1_sum6 <- summary.dispRity(ts1_sumvar_grdsplit_rar)
+ts1_sum6 <- add_column(ts1_sum6, 
+             analysis = "ts1", 
+             metric = "sumvar", 
+             model = ts1_sumvar_grdsplit_rar$call$subsets[2],
+             .before = 1
+             )
+# Basic plot of TS results
+plot.dispRity(ts1_sumvar_grdsplit_rar, type = "continuous", main = "ts1_sumvar_grdsplit_rar")
+# Test for differences between the time slices using a linear model
+ts1_sumvar_grdsplit_rar_lm <- test.dispRity(ts1_sumvar_grdsplit_rar, test = lm, comparisons = "all", correction = "bonferroni")
+# Summarise lm results
+ts1_lm_sum6 <- summ(ts1_sumvar_grdsplit_rar_lm)
+```
+
+## Create dataframe combining all ts1 results
+```{r}
+# time slice analyses
+# ts1 summaries list
+ts1_summary_list <- list(ts1_sum1, ts1_sum2, ts1_sum3, ts1_sum4, ts1_sum5, ts1_sum6)
+# combine ts1 summaries into singel dataframe
+ts1_results <- bind_rows(ts1_summary_list)
+# export dataframe as csv file
+write.csv(ts1_results, (here("Outputs/ts1_results.csv")))
+
+#lm analyses 
+#ts1 lm summaries list
+ts1_lm_summary_list <- list(ts1_lm_sum1, ts1_lm_sum2,ts1_lm_sum3, ts1_lm_sum4, ts1_lm_sum5, ts1_lm_sum6)
+# model name list
+ts1_lm_model_list <- list("ts1_sumvar_acctran", "ts1_sumvar_deltran", "ts1_sumvar_rand", "ts1_sumvar_prox", "ts1_sumvar_eqsplit", "ts1_sumvar_grdsplit")
+# combine lm summaries into single table and export as spreadsheet 
+ts1_lm_results <- export_summs(ts1_lm_summary_list, statistics = "all", model.names = ts1_lm_model_list, to.file = "xlsx", file.name = (here("Outputs/ts1_lm_results.xlsx")))
+```
+
+## Testing the diaparity metric
+
+Finally, we will also test our chosen disparity metric, the sum of variances. In this study we are essentially using it as a proxy of trait space size (i.e. cochlear morphospace size). The code below will create a plot to show that this metric is indeed capturing changes in trait space size:
+
+```{r}
+sumvar_test <- test.metric(ECHO_ace_pca_matrix, metric = c(sum, variances), shifts = c("random", "size"), replicates = 50, save.steps = TRUE, verbose = TRUE)
+
+plot(sumvar_test)
+```

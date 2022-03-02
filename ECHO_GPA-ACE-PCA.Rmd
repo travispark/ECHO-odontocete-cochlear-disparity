@@ -1,0 +1,211 @@
+---
+title: "ECHO_GPA_ACE_PCA"
+author: "Travis Park, Natalie Cooper, Thomas Guillerme"
+date: "16/02/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# ECHO: GPA & ACE
+
+This document will allow you to perform generalised procrustes analysis (GPA) and Ancestral Character Estimation (ACE) on landmarks placed on a sample of odontocete cochleae.  
+
+Remember to alter file paths to match your own directories.
+
+## Load libraries
+
+First, we will load in the libraries that will be used to do all the analyses:
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyverse)
+library(ape)
+library(dispRity)
+library(geomorph)
+library(broom)
+library(ggplot2)
+library(ggpubr)
+```
+
+## Load tree file
+
+This will be the phylogeny used to estimate the ancestral states (and later the disparity):
+
+```{r}
+ECHO_tree <- read.tree(here(file = "Data/BAMM_testtree_4.tre"))
+ECHO_tree <- makeNodeLabel(ECHO_tree, method = "number", prefix = "n")
+# Adding a root age (max tree age date) as write.nexus/tree won't save root times
+ECHO_tree$root.time <- max(tree.age(ECHO_tree)[, 1])
+```
+
+A potential downstream issue is that using trees with branch lengths of 0 (i.e. anagenetic speciation) causes the REML method of ACE to stop working. If the tree being used already has had this done we don't need ot do this next step, otherwise We use this workaround here: 
+```{r}
+## Replacing 0 branch length by 1% of the average branch length
+ECHO_tree$edge.length[which(ECHO_tree$edge.length == 0)] <- 0.01*mean(ECHO_tree$edge.length)
+```
+
+## Input shape data
+
+Now we need to bring in the shape data. These are in a series of .pts files which contain the 3D coordinates of the landmarks that were placed on the 3D cochlea models. We will need to tell the computer how many landmarks there are, how many dimensions the data will be in and define a path to the folder the .pts files are located in: 
+
+```{r}
+n.landmarks <- 361
+n.dim <- 3
+Ptspath <- here("Landmarks/L371-cochlea-dataset/ECHO_L361-cochlea_pts_90-taxa/")
+```
+
+Once we know where the files are, we can then make a list of the files to import in. The code to do this below is from Ryan Felice, orignallly written by Anne-Claire Fabre, which uses unmodified .pts data format from IDAV Landmark:
+
+```{r}
+ptslist <- dir(path = Ptspath, pattern = '.pts', recursive = TRUE)
+```
+
+Next we want to transform this list of files into a matrix so R can run analyses on it. We do this by:
+
+```{r}
+ptsarray <- array(dim = c(n.landmarks, n.dim, length(ptslist)))
+for (i in 1:length(ptslist)) {
+  ptsarray[, , i] <-
+    as.matrix(read.table(
+      file = paste0(Ptspath, "/" , ptslist[i]),
+      skip = 2, # skips first  two lines of each pts file (has other info in them)
+      header = FALSE,
+      sep = "",
+      row.names = 1
+    ))
+}
+```
+
+## Procrustes superimposition
+
+Now that we have all our landmark coordinates loaded in and in matrix form, we now want to  remove the effects of position, scale and orientation. The method used to do this in this analysis is Procrustes superimposition.  
+
+The function used in this analysis (gpagen) requires a matrix that tells it what positions the sliding semilandmarks will slide between. We load this in first:
+
+```{r}
+slidematrix <- as.matrix(read.csv(here("Data/Sliding-matrix_L361-cochlea-dataset_1.csv")))
+```
+
+Additionally, we will also need to give R the metadata of the specimens (e.g. taxon name, habitat, regime). This will be used in downstream analyses, but we'll load it in now:
+
+```{r}
+ECHO_metadata <- read.csv(here("Data/ECHO_meta-data_1.csv"))
+```
+
+Then we can actually perform the Procrustes superimposition:
+
+```{r}
+ECHO_gpa <- gpagen(ptsarray, curves = slidematrix)
+```
+
+Now we can use the metadata to assign the taxon names to the corresponding procrustes coordinates (always make sure that both are in the same order before doing this):
+
+```{r}
+dimnames(ECHO_gpa$coords)[[3]] <- ECHO_metadata$Taxon
+```
+
+## Ancestral state estimation
+
+The ancestral states for the nodes in the tree are estimated prior to being ordinated in a PCA. This is done so that the morphospace obtained in the following PCA is retained and not altered by any post-ordination analyses. It should be noted however, that pre-ordination ancestral state estimation can change the ordinated space's geometry (i.e. the relationship between the points not estimated) and implies longer computational times, but you are at least transforming the original dataset rather than an already altered dataset.
+
+First, we take the procrustes coordinates from the GPA and put them in a 2D matrix that we can apply the ACE to:
+
+```{r}
+## Transforming into a 2D matrix
+ECHO_gpa_matrix <- two.d.array(ECHO_gpa$coords)
+
+## Naming the rownames (to correspond to the tips in the tree) #CHECK ORDER OF TAXA
+rownames(ECHO_gpa_matrix) <- ECHO_tree$tip.label
+```
+
+We can then proceed to the ancestral states estimations for each node and each character.
+The characters here are the x/y/z position of each landmark:
+
+```{r, warning = FALSE}
+## wrapper for single ace
+do.one.ace <- function(character, tree) {
+    ## The ace
+    ace_out <- ace(x = character, phy = tree, type = "continuous", model = "BM")
+    ## Getting the results only (see note below)
+    return(ace_out$ace)
+}
+
+## Reconstruct all the characters
+ace_point_estimates <- apply(ECHO_gpa_matrix, 2, do.one.ace, ECHO_tree)
+```
+
+With that done we then rename the ancestral estimations to correspond to the node list and combine them with the tips:
+
+```{r}
+## Renaming the ace point estimates
+rownames(ace_point_estimates) <- ECHO_tree$node.label
+
+## Combining both tips and nodes
+ECHO_gpa_ace_matrix <- rbind(ECHO_gpa_matrix, ace_point_estimates)
+```
+
+## Principal components analysis
+
+With everything now ready to go, we can ordinate the data. Below we first convert our matricies into 3D arrays (so that they can be used in Geomorph's plotTangentSpace function):
+
+```{r}
+# Convert combined gpa and ace matrix into 3D array
+ECHO_gpa_ace_3Darray <- arrayspecs(ECHO_gpa_ace_matrix, 361, 3)
+```
+
+Then do the PCA:
+
+```{r}
+# Ordination with ancestral states
+ECHO_ace_pca <- gm.prcomp(A = ECHO_gpa_ace_3Darray)
+# plot PCA
+plot(ECHO_ace_pca)
+```
+
+Let's export the PC scores of the PCA as a CSV file so we can use them in downstream analyses:
+
+```{r}
+# PC scores with ancestral states
+write.csv(ECHO_ace_pca$x, here("Data/ECHO_ace_pca-scores_2.csv"))
+```
+
+We can also make a pretty figure with our PCA data:
+
+```{r}
+# Convert the PCA scores into a data frame
+x <- as.data.frame(ECHO_ace_pca$x)
+#select relevant PCs from PCA, i.e. 95% of total variation (check summary to find out how many PCs are required)
+x <- select(x, -c(Comp29:Comp179))
+# remove ACE values, don't need to plot them
+x <- slice(x, c(1:90))
+
+# Plot results of PC axes of your choice
+ggplot(data = x, aes(x = Comp1, y = Comp2, colour = ECHO_metadata$Epoch, label = ECHO_metadata$Taxon, fill = ECHO_metadata$Epoch)) + 
+  geom_point() + 
+  geom_text(aes(label= ECHO_metadata$Taxon),hjust=0, vjust=0) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  stat_chull(geom = "polygon", alpha = 0.4, size = 1) +
+  labs(x = "PC1 (40.34%)", y = "PC2 (10.07%)") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size=18)) 
+```         
+
+Make PCA plot but with taxa grouped by epoch:
+
+```{r}
+ggplot(data = x, aes(x = Comp1, y = Comp2, colour = ECHO_metadata$Family, fill = ECHO_metadata$Family)) + 
+  geom_point() + 
+  geom_vline(xintercept = 0, linetype = 2) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  stat_chull(geom = "polygon", alpha = 0.4, size = 1) +
+  labs(x = "PC1 (40.34%)", y = "PC2 (10.07%)") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size=18))
+```
+
+We can now use the exported PCA coordinates to run our disparity analyses. See the accompanying Rmd for doing this.
